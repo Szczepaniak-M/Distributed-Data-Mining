@@ -1,0 +1,51 @@
+---
+- hosts: hadoop_nodes
+  tasks:
+    - name: Update apt
+      become: true
+      apt: update_cache=yes force_apt_get=yes
+
+    - name: Install pip
+      become: true
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install python packages
+      become: true
+      pip:
+        name:
+          - dask[complete]
+          - paramiko
+          - distributed
+          - asyncssh
+          - pyarrow
+
+    - name: Create directory for Dask files
+      file:
+        path: /home/ubuntu/dask
+        state: directory
+        recurse: yes
+
+    - name: Create the Dask hostfile
+      file:
+        path: /home/ubuntu/dask/daskhosts
+        state: touch
+
+    - name: Add host IP addresses to Dask hostfile
+      lineinfile:
+        path: "/home/ubuntu/dask/daskhosts"
+        line: "{{ item }}"
+        insertafter: EOF
+        state: present
+      with_items:
+        - "{{ master }}"
+        - "{{ datanode1 }}"
+        - "{{ datanode2 }}"
+        - "{{ datanode3 }}"
+      become: true
+
+    - name: Add CLASSPATH to .bashrc
+      lineinfile:
+        path: "/home/ubuntu/.bashrc"
+        line: "export CLASSPATH=`$HADOOP_HOME/bin/hdfs classpath --glob`"

@@ -1,0 +1,177 @@
+---
+- name: Provides basic setup for all nodes
+  hosts: hadoop_nodes
+  vars:
+    hadoop_installation_dir: "/opt/hadoop-3.3.6"
+    java_home: "/usr/lib/jvm/java-11-openjdk-amd64"
+    hadoop_conf_dir: "{{ hadoop_installation_dir }}/etc/hadoop"
+  tasks:
+    - name: Install Java
+      become: true
+      apt:
+        name: openjdk-11-jdk
+        state: present
+
+    - name: Add entries to .bashrc
+      lineinfile:
+        path: "/home/ubuntu/.bashrc"
+        line: "{{ item }}"
+        insertafter: EOF
+        state: present
+      with_items:
+        - 'export JAVA_HOME="{{ java_home }}"'
+        - 'export HADOOP_HOME="{{ hadoop_installation_dir }}"'
+        - 'export PATH=$HADOOP_HOME/sbin:$HADOOP_HOME/bin:$PATH'
+
+    - name: Check if Hadoop is already installed
+      stat:
+        path: "{{ hadoop_installation_dir }}"
+      register: hadoop_installed
+
+    - name: Download Hadoop
+      get_url:
+        url: "https://archive.apache.org/dist/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz"
+        dest: "/opt/"
+        mode: 0755
+      when: not hadoop_installed.stat.exists
+      register: download_result
+      until: download_result is succeeded
+      retries: 3
+      delay: 5
+      become: true
+
+    - name: Extract Hadoop
+      unarchive:
+        src: "/opt/hadoop-3.3.6.tar.gz"
+        dest: "/opt/"
+        remote_src: true
+      when: download_result.changed
+      become: true
+
+    - name: Add entries to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ item }}"
+        insertbefore: BOF
+        state: present
+      with_items:
+        - "{{ master }}      master yarn"
+        - "{{ datanode1 }}   datanode1"
+        - "{{ datanode2 }}   datanode2"
+        - "{{ datanode3 }}   datanode3"
+        - "{{ datanode4 }}   datanode4"
+        - "{{ datanode5 }}   datanode5"
+        - "{{ datanode6 }}   datanode6"
+        - "{{ datanode7 }}   datanode7"
+        - "{{ datanode8 }}   datanode8"
+      become: true
+
+    - name: Create a Swap File
+      command: "fallocate -l 5G /swapfile"
+      become: true
+
+    - name: Change access Swap File
+      command: "chmod 600 /swapfile"
+      become: true
+
+    - name: Mark as Swap File
+      command: "mkswap /swapfile"
+      become: true
+
+    - name: Enable Swap File
+      command: "swapon /swapfile"
+      become: true
+
+    - name: Backup Swap File
+      command: "cp /etc/fstab /etc/fstab.bak"
+      become: true
+
+    - name: Save backup
+      command: "echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab"
+
+    - name: Set Swappiness
+      command: "sysctl vm.swappiness=10"
+      become: true
+
+    - name: Set Swappiness in file
+      lineinfile:
+        path: "/etc/sysctl.conf"
+        line: "vm.swappiness=10"
+        insertafter: EOF
+        state: present
+      become: true
+
+
+- name: Generate SSH key
+  hosts: master
+  tasks:
+    - name: Generate SSH key pair
+      openssh_keypair:
+        path: "/home/ubuntu/.ssh/id_rsa"
+        state: present
+
+    - name: Retrieve public key
+      shell: "cat /home/ubuntu/.ssh/id_rsa.pub"
+      register: master_public_key
+      changed_when: false
+
+    - name: Set fact for master public key
+      set_fact: master_public_key_var="{{ master_public_key.stdout }}"
+
+
+- name: Distribute public key to all nodes
+  hosts: hadoop_nodes
+  tasks:
+    - name: Add master public key to authorized
+      authorized_key:
+        user: ubuntu
+        key: "{{ hostvars['hadoop-node-0'].master_public_key_var }}"
+
+
+- name: Set up worker nodes
+  hosts: datanodes
+  vars:
+    hadoop_installation_dir: "/opt/hadoop-3.3.6"
+    java_home: "/usr/lib/jvm/java-11-openjdk-amd64"
+    hadoop_conf_dir: "{{ hadoop_installation_dir }}/etc/hadoop"
+  tasks:
+    - name: Configure Hadoop Datanode
+      template:
+        src: "{{ item }}"
+        dest: "{{ hadoop_conf_dir }}/"
+      with_fileglob:
+        - "hadoop-conf-files/worker/*"
+      become: true
+
+- name: Set up master node
+  hosts: master
+  vars:
+    hadoop_installation_dir: "/opt/hadoop-3.3.6"
+    hadoop_conf_dir: "{{ hadoop_installation_dir }}/etc/hadoop"
+    hadoop_namenode_dir: "/home/ubuntu/data/hadoop/hadoop-hdfs/namenode"
+  tasks:
+    - name: Configure Hadoop Datanode
+      template:
+        src: "{{ item }}"
+        dest: "{{ hadoop_conf_dir }}/"
+      with_fileglob:
+        - "hadoop-conf-files/master/*"
+      become: true
+
+    - name: Check if Namenode directory is empty (indicating first startup)
+      stat:
+        path: "{{ hadoop_namenode_dir }}"
+      register: namenode_dir_stat
+
+    - name: Format HDFS if Namenode directory is empty
+      command: "{{ hadoop_installation_dir }}/bin/hdfs namenode -format"
+      when: not namenode_dir_stat.stat.exists
+
+    - name: Start HDFS NameNode
+      command: "{{ hadoop_installation_dir }}/sbin/start-dfs.sh"
+
+    - name: Start YARN ResourceManager
+      command: "{{ hadoop_installation_dir }}/sbin/start-yarn.sh"
+
+    - name: Start History server
+      command: "{{ hadoop_installation_dir }}/bin/mapred --daemon start historyserver"

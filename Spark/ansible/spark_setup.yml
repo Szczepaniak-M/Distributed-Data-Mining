@@ -1,0 +1,56 @@
+---
+- name: Install and Configure Spark
+  hosts: master
+  vars:
+    hadoop_installation_dir: "/opt/hadoop-3.3.6"
+    spark_installation_dir: "{{ hadoop_installation_dir }}/spark"
+
+  tasks:
+    - name: Check if Spark is already installed
+      stat:
+        path: "{{ spark_installation_dir }}"
+      register: spark_installed
+
+    - name: Download Spark
+      get_url:
+        url: "https://dlcdn.apache.org/spark/spark-3.5.0/spark-3.5.0-bin-hadoop3-scala2.13.tgz"
+        dest: "{{ hadoop_installation_dir }}"
+        mode: 0755
+      when: not spark_installed.stat.exists
+      register: download_result
+      until: download_result is succeeded
+      retries: 3
+      delay: 5
+
+    - name: Extract Spark
+      unarchive:
+        src: "{{ hadoop_installation_dir }}/spark-3.5.0-bin-hadoop3-scala2.13.tgz"
+        dest: "{{ hadoop_installation_dir }}"
+        remote_src: true
+      when: download_result.changed
+
+    - name: Rename Spark directory
+      command: "mv {{ hadoop_installation_dir }}/spark-3.5.0-bin-hadoop3-scala2.13 {{ spark_installation_dir }}"
+
+    - name: Add entries to .bashrc
+      lineinfile:
+        path: "/home/ubuntu/.bashrc"
+        line: "{{ item }}"
+        insertafter: EOF
+        state: present
+      with_items:
+        - 'export SPARK_HOME="/opt/hadoop-3.3.6/spark"'
+        - 'export PATH=$PATH:$SPARK_HOME/bin:$HADOOP_HOME/sbin'
+        - 'export HADOOP_CONF_DIR="/opt/hadoop-3.3.6/etc/hadoop"'
+        - 'export LD_LIBRARY_PATH="/opt/hadoop-3.3.6/lib/native:$LD_LIBRARY_PATH"'
+
+    - name: Configure Spark
+      template:
+        src: "spark-conf-files/spark-defaults.conf"
+        dest: "{{ spark_installation_dir }}/conf/"
+
+    - name: Create /spark/eventLog directory in HDFS
+      command: "{{ hadoop_installation_dir }}/bin/hadoop fs -mkdir -p /spark/eventLog"
+
+    - name: Start Spark History Server
+      command: "{{ spark_installation_dir }}/sbin/start-history-server.sh"
